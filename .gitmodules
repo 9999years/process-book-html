@@ -1,0 +1,3 @@
+[submodule "latex2svg"]
+	path = latex2svg
+	url = https://github.com/tuxu/latex2svg.git
