@@ -8,8 +8,10 @@ import re
 from typing import Optional
 import difflib
 import sys
+import math
 
 from bs4 import BeautifulSoup, NavigableString, Comment, Tag
+from termcolor import colored, cprint
 
 import cache
 
@@ -29,27 +31,60 @@ IRBOOK_MARKER = r'''
 <H1>Introduction to Information Retrieval</H1>
 '''
 
+LEFT_FLOOR = r'\mbox{LEFT FLOOR PROCESS-BOOK-HTML}'
+LEFT_FLOOR_MATHML = '<mtext>LEFT FLOOR PROCESS-BOOK-HTML</mtext>'
+LEFT_FLOOR_ACTUAL = '<mo>&#8970;</mo>'
+RIGHT_FLOOR = r'\mbox{RIGHT FLOOR PROCESS-BOOK-HTML}'
+RIGHT_FLOOR_MATHML = '<mtext>RIGHT FLOOR PROCESS-BOOK-HTML</mtext>'
+RIGHT_FLOOR_ACTUAL = '<mo>&#8971;</mo>'
+
 NEWCOMMANDS = {
     r'\langle': r'\newcommand\langle{\left<}',
     r'\rangle': r'\newcommand\rangle{\right>}',
+    r'\lfloor': r'\newcommand\lfloor{' + LEFT_FLOOR + '}',
+    r'\rfloor': r'\newcommand\rfloor{' + RIGHT_FLOOR + '}',
     r'\weestrut': r'\newcommand\weestrut{}',
-    r'\medstrut': r'\newcommand\weestrut{}',
+    r'\medstrut': r'\newcommand\medstrut{}',
+    r'\upstrut': r'\newcommand\upstrut{}',
     r'\begin{equation}': r'\newenvironment{equation}{\[}{\]}',
     r'\framebox': r'\newcommand\framebox[1]{\fbox{#1}}',
+    r'\cal': r'\newcommand\cal[1]{\mathcal{#1}}',
+    r'\phantom': r'\newcommand\phantom[1]{\hspace{0.5em}}',
+    r'\ne': r'\newcommand\ne{\not=}',
+    r'\thinspace': r'\newcommand\thinspace{}',
 
     r'\termf': r'\newcommand\termf{\mathrm{tf}}',
+    r'\collf': r'\newcommand\collf{\mathrm{cf}}',
+    r'\docf': r'\newcommand\docf{\mathrm{df}}',
+    r'\oper': r'\newcommand\oper[1]{\textrm{#1}}',
     r'\tcjclass': r'\newcommand\tcjclass{c}',
     r'\tcposindex': r'\newcommand\tcposindex{k}',
     r'\unicode': r'\newcommand\unicode[2]{#2}', # ???
     r'\mthatwask': r'\newcommand\mthatwask{m}',
     r'\nthatwasell': r'\newcommand\nthatwasell{n}',
+    r'\twasx': r'\newcommand\twasx{t}',
+    r'\matrix': r'\newcommand\matrix[1]{#1}',
     r'\lsimatrix': r'\newcommand\lsimatrix{C}',
     r'\query': r'\newcommand\query[1]{\textsf{#1}}',
+    r'\term': r'\newcommand\term[1]{\textsf{#1}}',
+    r'\class': r'\newcommand\class[1]{\textit{#1}}',
     r'\onedoc': r'\newcommand\onedoc{d}',
+    r'\onedoclabeled': r'\newcommand\onedoclabeled{\left< d, c \right>}',
+    r'\docset': r'\newcommand\docset{D}',
     r'\argmin': r'\newcommand\argmin{\mathrm{arg min}}',
+    r'\argmax': r'\newcommand\argmax{\mathrm{arg max}}',
     r'\dlenmax': r'\newcommand\dlenmax{L_{\max}}',
     r'\tcword': r'\newcommand\tcword{t}',
     r'\observationo': r'\newcommand\observationo{N}',
+    r'\wvar': r'\newcommand\wvar{U}',
+    r'\xvar': r'\newcommand\xvar{X}',
+    r'\docsetlabeled': r'\newcommand\docsetlabeled{\mathbb{D}}',
+    r'\ktopk': r'\newcommand\ktopk{k}',
+    r'\oldell': r'\newcommand\oldell{i}',
+    r'\lsinoterms': r'\newcommand\lsinoterms{M}',
+    r'\lsinodocs': r'\newcommand\lsinodocs{N}',
+    r'\colon': r'\newcommand\colon{:}', # ???
+    r'\begin{example}': r'\newenvironment{example}{}{}',
 }
 
 TOC_PREFIX = r'''
@@ -76,8 +111,10 @@ TOC_POSTFIX = r'''
 '''
 
 ENV_START = re.compile(r'\\begin{[a-zA-Z]+\*?}')
-
 TEX_ONE_LETTER = re.compile(r'^\$([a-zA-Z])\$$')
+TEX_KERN_RE = re.compile(r'\\kern\s*[0-9]*(\.[0-9]+)?(pt|in|cm|em)')
+TABULAR_START = re.compile(r'\\begin{tabular}{([^}]+)}')
+TABULAR_END = r'\end{tabular}'
 
 def read(fname: str) -> str:
     with open(fname, encoding='utf-8') as f:
@@ -132,7 +169,10 @@ def tex_to_mathml_(tex: str) -> str:
             src=tex,
         )
 
-    return proc.stdout
+    # Patch up \lfloor and \rfloor
+    return (proc.stdout.replace(LEFT_FLOOR_MATHML, LEFT_FLOOR_ACTUAL)
+            .replace(RIGHT_FLOOR_MATHML, RIGHT_FLOOR_ACTUAL)
+    )
 
 
 def tex_to_mathml(tex: str) -> str:
@@ -145,6 +185,9 @@ def tex_to_mathml(tex: str) -> str:
     if tex.startswith(textstyle_start):
         tex = tex.replace(textstyle_start, '$')
 
+    tex = tex.replace(r'\char93', r'\#')
+    tex = TEX_KERN_RE.sub('', tex)
+
     if tex == r'$\langle$':
         # ugh, edge cases
         tex = r'$\left<\right.$'
@@ -152,6 +195,13 @@ def tex_to_mathml(tex: str) -> str:
         tex = r'$\left.\right>$'
     elif tex == r'$\ldots\rangle$':
         tex = r'$\ldots\left.\right>$'
+
+    tex = TABULAR_START.sub(r'\\begin{array}{\1}', tex)
+    tex = tex.replace(TABULAR_END, r'\end{array}')
+
+    tex = (tex.replace(r'\big(', r'\left(')
+           .replace(r'\big)', r'\right)')
+           .replace(r'\nolimits', ''))
 
     return cache.ensure(tex, tex_to_mathml_)
 
@@ -268,6 +318,10 @@ def process_chapter(chapter: str) -> BeautifulSoup:
         if r'\includegraphics' in alt:
             continue
 
+        # cross-reference symbol
+        if alt == '[*]':
+            img.parent.string = '‡'
+            continue
 
         mathml = trivial_tex_to_mathml(alt)
         if mathml is None:
@@ -380,12 +434,20 @@ def main():
     #     '/home/becca/Downloads/ir/IR-book/html/htmledition/blocked-storage-1.html'
     # ]
     skipping = True
-    skip_until = None # 'centroid-clustering-1.html'
-    for chapter_filename in chapters:
+    skip_until = 'tokenization-1.html'
+
+    digits = math.ceil(math.log10(len(chapters)))
+    fmt = f'{digits}d'
+
+    for i, chapter_filename in enumerate(chapters):
         if skip_until is None or chapter_filename.endswith(skip_until):
             skipping = False
-        output_filename = path.join('output', path.basename(chapter_filename))
-        print(output_filename)
+        output_basename = path.basename(chapter_filename)
+        output_filename = path.join('output', output_basename)
+        print(colored(
+            '[{}/{}]:'.format(format(i, fmt), len(chapters)),
+            'green', attrs=['bold']),
+              output_basename)
         if skipping:
             continue
         with open(output_filename, 'w') as f:
@@ -393,13 +455,19 @@ def main():
             try:
                 chapter_processed = process_chapter(chapter_txt)
             except TeXRenderError as e:
+                cprint('Error while converting TeX to MathML', 'red', attrs=['bold'])
                 print(e.proc)
-                print(e.proc.output)
-                print(e.proc.stderr)
-                print('TeX source:', e.src)
+                print(e.proc.output.strip())
+                cprint(e.proc.stderr.strip(), 'red')
+                cprint('TeX source:', 'red', attrs=['bold'])
+                print(e.src)
                 if e.context:
-                    print('Page context:', e.context)
-                print('Check the chapter online:', ONLINE_SRC_BASE + path.basename(chapter_filename))
+                    cprint('Page context:', 'red', attrs=['bold'])
+                    print(e.context)
+                print('Check the chapter online:', colored(
+                    ONLINE_SRC_BASE + output_basename,
+                    'cyan', attrs=['underline']
+                ))
                 sys.exit(1)
 
             f.write(process_chapter(read(chapter_filename)).prettify())
