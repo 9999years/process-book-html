@@ -11,12 +11,13 @@ import sys
 import math
 import itertools
 
-from bs4 import BeautifulSoup, NavigableString, Comment, Tag
+from bs4 import BeautifulSoup, NavigableString, Comment, Tag, Doctype
+import bs4
 from termcolor import colored, cprint
 
 import cache
 
-BOOK_SRC_DIR = 'book-src'
+BOOK_SRC_DIR = 'information-retrieval'
 ONLINE_SRC_BASE = 'https://nlp.stanford.edu/IR-book/html/htmledition/'
 OUTPUT_DIR = 'output'
 
@@ -30,6 +31,7 @@ IRBOOK_MARKER = r'''
 <BODY >
 <H1>Introduction to Information Retrieval</H1>
 '''
+CONVERSION_COMMENT_MARKER = 'Converted with LaTeX2HTML 2002-2-1 (1.71)'
 
 LEFT_FLOOR = r'\mbox{LEFT FLOOR PROCESS-BOOK-HTML}'
 LEFT_FLOOR_MATHML = '<mtext>LEFT FLOOR PROCESS-BOOK-HTML</mtext>'
@@ -93,14 +95,6 @@ TEX_ONE_LETTER = re.compile(r'^\$([a-zA-Z])\$$')
 TEX_KERN_RE = re.compile(r'\\kern\s*[0-9]*(\.[0-9]+)?(pt|in|cm|em)')
 TABULAR_START = re.compile(r'\\begin{tabular}{([^}]+)}')
 TABULAR_END = r'\end{tabular}'
-
-XHTML_TRIM_START = r'''
-<?xml version="1.0" encoding="utf-8"?>
-
-<!DOCTYPE html
-   PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
-   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd" >
-'''.strip()
 
 def read(fname: str) -> str:
     with open(fname, encoding='utf-8') as f:
@@ -228,8 +222,8 @@ def expand_ellipsized(el: Tag) -> Optional[str]:
             return None
 
     found_comment = False
-    for prev_el in parent.previous_elements:
-        if isinstance(prev_el, Comment):
+    for comment in parent.previous_elements:
+        if isinstance(comment, Comment):
             found_comment = True
             break
 
@@ -237,16 +231,17 @@ def expand_ellipsized(el: Tag) -> Optional[str]:
         return None
 
     math_marker = 'MATH\n'
-    tex = prev_el.strip()
+    tex = comment.strip()
     if tex.startswith(math_marker):
         tex = tex[len(math_marker):].strip()
 
-    if tex.startswith('Converted with LaTeX2HTML'):
+    if tex.startswith(CONVERSION_COMMENT_MARKER):
         return None
 
     if not check_tex_sameish(tex, el['alt']):
         return None
 
+    comment.replace_with('')
     return tex
 
 
@@ -284,6 +279,8 @@ def process_chapter(chapter: str) -> BeautifulSoup:
             br.decompose()
 
     for s in chapter_soup.find_all(text=re.compile("[`']")):
+        if type(s) in [Comment, bs4.Doctype, bs4.ProcessingInstruction, bs4.Declaration]:
+            continue
         old_s = str(s)
         new_s = (
             old_s
@@ -324,6 +321,7 @@ def process_chapter(chapter: str) -> BeautifulSoup:
 
         img.replace_with(soups(mathml, 'html.parser'))
 
+    # delete empty children at the end of the docment
     annoying_tag_names = ['hr', 'p', 'br']
     empty_tags = ['hr', 'br']
     children = list(chapter_soup.body.find_all(True))
@@ -343,18 +341,20 @@ def process_chapter(chapter: str) -> BeautifulSoup:
 
     # this prevents a file from being invalid xhtml lol
     for bad_a in chapter_soup.find_all('a'):
-        del bad_a['wikipedia:general']
+        if bad_a.has_attr('wikipedia:general'):
+            del bad_a['wikipedia:general']
+            break
 
-    # We're renaming everything to .xhtml
-    for el in itertools.chain(chapter_soup.find_all('link'),
-                              chapter_soup.find_all('a')):
-        if el.has_attr('href') and not el['href'].startswith('http'):
-            el['href'] = el['href'].replace('.html', '.xhtml')
+    # # We're renaming everything to .xhtml
+    # for el in itertools.chain(chapter_soup.find_all('link'),
+    #                           chapter_soup.find_all('a')):
+    #     if el.has_attr('href') and not el['href'].startswith('http'):
+    #         el['href'] = el['href'].replace('.html', '.xhtml')
 
     # Get rid of naughty attributes
     for el in chapter_soup.find_all(True):
         el['class'] = ''
-        for attr in ['align', 'valign', 'cellpadding', 'border']:
+        for attr in ['align', 'valign', 'cellpadding', 'border', 'nowrap', 'compact']:
             if el.has_attr(attr):
                 el['class'] += attr + '-' + el[attr].lower()
                 del el[attr]
@@ -377,31 +377,32 @@ def process_chapter(chapter: str) -> BeautifulSoup:
         el.name = 'code'
 
     chapter_soup.html.head.append(
-        '<link rel="stylesheet" type="text/css" href="../book.css" />'
+        chapter_soup.new_tag('meta', charset='utf-8')
+    )
+    chapter_soup.html.head.append(
+        chapter_soup.new_tag(
+            'link',
+            rel='stylesheet',
+            type='text/css',
+            href='Styles/book.css',
+        )
     )
 
-    xhtml = html_to_xhtml(str(chapter_soup))
-    if xhtml.startswith(XHTML_TRIM_START):
-        xhtml = xhtml[len(XHTML_TRIM_START):]
-    else:
-        raise ValueError('Weird XHTML ' + xhtml)
+    first_child = next(chapter_soup.children)
+    if isinstance(first_child, Doctype):
+        # XHTML has no doctype, and Doctype has no decompose method
+        # first_child.replace_with(soups('<!DOCTYPE html>'))
+        first_child.replace_with(Doctype('html'))
 
-    chapter_soup['xmlns:epub'] = 'http://www.idpf.org/2007/ops'
-    return '<!DOCTYPE html>\n' + xhtml
+    for el in chapter_soup.children:
+        if isinstance(el, Comment) and el.startswith(CONVERSION_COMMENT_MARKER):
+            el.replace_with('')
+            break
 
+    # chapter_soup.find('html')['xmlns:epub'] = 'http://www.idpf.org/2007/ops'
 
-
-def html_to_xhtml(html: str) -> str:
-    proc = subprocess.run(
-        # Not platform-independent!!!
-        'html2xhtml /dev/stdin --ics utf-8'.split(),
-        input=html,
-        capture_output=True,
-        text=True,
-        encoding='utf-8',
-    )
-    proc.check_returncode()
-    return proc.stdout
+    # chapter_soup.smooth()
+    return chapter_soup
 
 
 
@@ -426,12 +427,16 @@ def main():
     digits = math.ceil(math.log10(len(chapters)))
     fmt = f'{digits}d'
 
+    if not path.exists(OUTPUT_DIR):
+        os.mkdir(OUTPUT_DIR)
+    cache.init_cache()
+
     for i, chapter_filename in enumerate(chapters):
         i += 1
         if skip_until is None or chapter_filename.endswith(skip_until):
             skipping = False
         output_basename = path.basename(chapter_filename)
-        output_filename = path.join(OUTPUT_DIR, output_basename).replace('.html', '.xhtml')
+        output_filename = path.join(OUTPUT_DIR, output_basename)
         print(colored(
             '[{}/{}]:'.format(format(i, fmt), len(chapters)),
             'green', attrs=['bold']),
@@ -458,7 +463,7 @@ def main():
                 ))
                 sys.exit(1)
 
-            f.write(process_chapter(read(chapter_filename)))
+            f.write(str(process_chapter(read(chapter_filename))))
 
     cprint('Done!', 'green', attrs=['bold'])
 

@@ -5,6 +5,11 @@ import hashlib
 CACHE_DIR = '.cache'
 
 
+def init_cache():
+    if not path.exists(CACHE_DIR):
+        os.mkdir(CACHE_DIR)
+
+
 def stable_hash(key):
     if isinstance(key, str):
         key = key.encode('utf-8')

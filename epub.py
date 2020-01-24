@@ -21,9 +21,11 @@ author = 'Christopher D. Manning, Prabhakar Raghavan, & Hinrich Schütze'
 published = '2008-07-01'
 publisher = 'Cambridge University Press'
 cover_fname = 'cover.jpg'
-contents_fname = 'contents-1.xhtml'
+contents_fname = 'contents-1.html'
 output_filename = 'information-retrieval.epub'
 css_filename = 'book.css'
+
+MATH_ELEMENT = '<math xmlns="http://www.w3.org/1998/Math/MathML">'
 
 def get_uuid() -> str:
     return 'b' + uuid.uuid1().hex
@@ -46,7 +48,7 @@ def generate_toc(contents: BeautifulSoup, uids: dict) -> (TocList, UUIDList):
             uid=uids[href],
         )
         spine.append(uids[href])
-        not_added_xhtml_files.discard(href)
+        not_added_html_files.discard(href)
 
         if li.ul:
             sub_toc = []
@@ -60,8 +62,8 @@ def generate_toc(contents: BeautifulSoup, uids: dict) -> (TocList, UUIDList):
             make_toc_li(li, toc)
 
     irbook = epub.Link(
-        uid=uids['irbook.xhtml'],
-        href='irbook.xhtml',
+        uid=uids['irbook.html'],
+        href='irbook.html',
         title='Introduction to Information Retrieval',
     )
     toc = [irbook]
@@ -70,10 +72,10 @@ def generate_toc(contents: BeautifulSoup, uids: dict) -> (TocList, UUIDList):
         irbook.uid
     ]
 
-    not_added_xhtml_files = set(map(path.basename, process_book_html.output_files('.xhtml')))
-    not_added_xhtml_files.discard(irbook.href)
+    not_added_html_files = set(map(path.basename, process_book_html.output_files('.html')))
+    not_added_html_files.discard(irbook.href)
     make_toc_ul(contents.find('ul'), toc)
-    spine.extend(map(uids.__getitem__, not_added_xhtml_files))
+    spine.extend(map(uids.__getitem__, not_added_html_files))
 
     return toc, spine
 
@@ -108,7 +110,7 @@ def make_epub() -> epub.EpubBook:
             content=f.read(),
         )
 
-    for filename in process_book_html.output_files('.xhtml'):
+    for filename in process_book_html.output_files('.html'):
         uid = get_uuid()
         uids[path.basename(filename)] = uid
 
@@ -119,7 +121,10 @@ def make_epub() -> epub.EpubBook:
             file_name=path.basename(filename),
             lang=language,
             content=content,
+            media_type='application/xhtml+xml',
         )
+        if MATH_ELEMENT in content:
+            chapter.properties.append('mathml')
         book.add_item(chapter)
 
     for filename in process_book_html.output_files('.png'):
