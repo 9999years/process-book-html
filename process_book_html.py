@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from os import path
 import os
 import re
-from typing import Optional
+from typing import Optional, List
 import difflib
 import sys
 import math
+import itertools
 
 from bs4 import BeautifulSoup, NavigableString, Comment, Tag
 from termcolor import colored, cprint
@@ -18,8 +19,6 @@ import cache
 BOOK_SRC_DIR = 'book-src'
 ONLINE_SRC_BASE = 'https://nlp.stanford.edu/IR-book/html/htmledition/'
 OUTPUT_DIR = 'output'
-
-CONTENTS_FILE = '/home/becca/Downloads/ir/IR-book/html/htmledition/contents-1.html'
 
 NAVPANEL_START = '<!--Navigation Panel-->'
 NAVPANEL_END  = '<!--End of Navigation Panel-->'
@@ -88,34 +87,20 @@ NEWCOMMANDS = {
     r'\begin{example}': r'\newenvironment{example}{}{}',
 }
 
-TOC_PREFIX = r'''
-<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN"
-   "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">
-<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-  <head>
-    <meta name="dtb:uid" content="urn:uuid:12644d5f-5e07-4d28-8d05-035a063edd31" />
-    <meta name="dtb:depth" content="3" />
-    <meta name="dtb:totalPageCount" content="0" />
-    <meta name="dtb:maxPageNumber" content="0" />
-  </head>
-<docTitle>
-  <text>Introduction to Information Retrieval</text>
-</docTitle>
-<docAuthor>
-  <text>Christopher D. Manning, Prabhakar Raghavan, and Hinrich Schütze</text>
-</docAuthor>
-'''
-
-TOC_POSTFIX = r'''
-</ncx>
-'''
 
 ENV_START = re.compile(r'\\begin{[a-zA-Z]+\*?}')
 TEX_ONE_LETTER = re.compile(r'^\$([a-zA-Z])\$$')
 TEX_KERN_RE = re.compile(r'\\kern\s*[0-9]*(\.[0-9]+)?(pt|in|cm|em)')
 TABULAR_START = re.compile(r'\\begin{tabular}{([^}]+)}')
 TABULAR_END = r'\end{tabular}'
+
+XHTML_TRIM_START = r'''
+<?xml version="1.0" encoding="utf-8"?>
+
+<!DOCTYPE html
+   PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+   "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd" >
+'''.strip()
 
 def read(fname: str) -> str:
     with open(fname, encoding='utf-8') as f:
@@ -356,75 +341,76 @@ def process_chapter(chapter: str) -> BeautifulSoup:
             else:
                 break
 
-    # this prevents a file from being invalid html lol
+    # this prevents a file from being invalid xhtml lol
     for bad_a in chapter_soup.find_all('a'):
         del bad_a['wikipedia:general']
 
-    return chapter_soup
+    # We're renaming everything to .xhtml
+    for el in itertools.chain(chapter_soup.find_all('link'),
+                              chapter_soup.find_all('a')):
+        if el.has_attr('href') and not el['href'].startswith('http'):
+            el['href'] = el['href'].replace('.html', '.xhtml')
+
+    # Get rid of naughty attributes
+    for el in chapter_soup.find_all(True):
+        el['class'] = ''
+        for attr in ['align', 'valign', 'cellpadding', 'border']:
+            if el.has_attr(attr):
+                el['class'] += attr + '-' + el[attr].lower()
+                del el[attr]
+
+        if el.has_attr('width'):
+            if el['width'] == '100%':
+                el['class'] += ' full-width'
+            else:
+                el['class'] += ' width-' + el['width']
+            del el['width']
+
+        if not el['class']:
+            del el['class']
+
+    for el in chapter_soup.find_all('br'):
+        if el.has_attr('clear'):
+            del el['clear']
+
+    for el in chapter_soup.find_all('tt'):
+        el.name = 'code'
+
+    chapter_soup.html.head.append(
+        '<link rel="stylesheet" type="text/css" href="../book.css" />'
+    )
+
+    xhtml = html_to_xhtml(str(chapter_soup))
+    if xhtml.startswith(XHTML_TRIM_START):
+        xhtml = xhtml[len(XHTML_TRIM_START):]
+    else:
+        raise ValueError('Weird XHTML ' + xhtml)
+
+    chapter_soup['xmlns:epub'] = 'http://www.idpf.org/2007/ops'
+    return '<!DOCTYPE html>\n' + xhtml
 
 
-@dataclass
-class NavPoint:
-    id: str
-    playOrder: int
-    labelText: str
-    content: str
 
-    def to_bs(self, soup: BeautifulSoup):
-        ret = soup.new_tag('navPoint',
-                           id=self.id,
-                           playOrder=self.playOrder)
-        label = soup.new_tag('navLabel')
-        labelText = soup.new_tag('text')
-        labelText.string = self.labelText
-        label.append(labelText)
-        ret.append(label)
-        content = soup.new_tag('content', src=self.content)
-        ret.append(content)
-        return ret
+def html_to_xhtml(html: str) -> str:
+    proc = subprocess.run(
+        # Not platform-independent!!!
+        'html2xhtml /dev/stdin --ics utf-8'.split(),
+        input=html,
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+    )
+    proc.check_returncode()
+    return proc.stdout
 
 
-def extract_contents(contents: BeautifulSoup) -> BeautifulSoup:
-    def mk_navpoint(label: str, href: str) -> NavPoint:
-        nonlocal num
-        num += 1
-        navPoint = NavPoint(
-            id=f'navpoint{num}',
-            playOrder=num,
-            labelText=label,
-            content='Text/{}'.format(href),
-        ).to_bs(root_soup)
-        return navPoint
 
-    def extract_contents_li(li: BeautifulSoup, navMap: BeautifulSoup):
-        nonlocal num
-        num += 1
-        navPoint = mk_navpoint(
-            label=str(li.a.string),
-            href=li.a['href'],
-        )
-
-        navMap.append(navPoint)
-
-        if li.ul:
-            extract_contents_ul(li.ul, navPoint)
-
-    def extract_contents_ul(ul: BeautifulSoup, navMap: BeautifulSoup):
-        for li in ul.find_all('li', recursive=False):
-            extract_contents_li(li, navMap)
-
-    root_soup = BeautifulSoup('<navMap></navMap>', 'lxml-xml')
-    navMap = root_soup.find('navMap')
-    num = 1
-
-    navMap.append(mk_navpoint(
-        label = 'Introduction to Information Retrieval',
-        href = 'irbook.html',
-    ))
-
-    extract_contents_ul(contents.find('ul'), navMap)
-
-    return navMap
+def output_files(ext: Optional[str] = None) -> List[str]:
+    return [
+        path.realpath(path.join(OUTPUT_DIR, p))
+        for p in sorted(os.listdir(OUTPUT_DIR))
+        if ext is None or p.endswith(ext)
+    ]
 
 
 def main():
@@ -441,10 +427,11 @@ def main():
     fmt = f'{digits}d'
 
     for i, chapter_filename in enumerate(chapters):
+        i += 1
         if skip_until is None or chapter_filename.endswith(skip_until):
             skipping = False
         output_basename = path.basename(chapter_filename)
-        output_filename = path.join(OUTPUT_DIR, output_basename)
+        output_filename = path.join(OUTPUT_DIR, output_basename).replace('.html', '.xhtml')
         print(colored(
             '[{}/{}]:'.format(format(i, fmt), len(chapters)),
             'green', attrs=['bold']),
@@ -471,14 +458,9 @@ def main():
                 ))
                 sys.exit(1)
 
-            f.write(process_chapter(read(chapter_filename)).prettify())
+            f.write(process_chapter(read(chapter_filename)))
 
-    print('Generating toc.ncx')
-    contents = soup(CONTENTS_FILE)
-    with open(path.join(OUTPUT_DIR, 'toc.ncx'), 'w') as f:
-        f.write(TOC_PREFIX)
-        f.write(extract_contents(contents).prettify())
-        f.write(TOC_POSTFIX)
+    cprint('Done!', 'green', attrs=['bold'])
 
 
 if __name__ == '__main__':

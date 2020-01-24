@@ -18,5 +18,6 @@ stdenv.mkDerivation rec {
       (import ./ebooklib.nix {inherit pkgs; pythonPackages = p;})
     ]))
     (import ./snuggletex.nix {inherit pkgs;})
+    (import ./html2xhtml.nix {inherit pkgs;})
   ];
 }
