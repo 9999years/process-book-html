@@ -48,12 +48,6 @@ def generate_toc(contents: BeautifulSoup, uids: dict) -> (TocList, UUIDList):
         spine.append(uids[href])
         not_added_xhtml_files.discard(href)
 
-        # soup = process_book_html.soup(output_path(href))
-        # for el in soup.find_all('img'):
-        #     spine.append(
-        #         uids[path.basename(el['src'])]
-        #     )
-
         if li.ul:
             sub_toc = []
             toc.append((link, sub_toc))
@@ -65,18 +59,19 @@ def generate_toc(contents: BeautifulSoup, uids: dict) -> (TocList, UUIDList):
         for li in ul.find_all('li', recursive=False):
             make_toc_li(li, toc)
 
-    toc = [epub.Link(
+    irbook = epub.Link(
         uid=uids['irbook.xhtml'],
         href='irbook.xhtml',
         title='Introduction to Information Retrieval',
-    )]
+    )
+    toc = [irbook]
     spine = [
         'cover',
-        # 'book_css',
-        toc[0].uid
+        irbook.uid
     ]
 
     not_added_xhtml_files = set(map(path.basename, process_book_html.output_files('.xhtml')))
+    not_added_xhtml_files.discard(irbook.href)
     make_toc_ul(contents.find('ul'), toc)
     spine.extend(map(uids.__getitem__, not_added_xhtml_files))
 
