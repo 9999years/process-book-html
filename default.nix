@@ -14,15 +14,9 @@ stdenv.mkDerivation rec {
       lxml
       ptpython
       termcolor
+      six
+      (import ./ebooklib.nix {inherit pkgs; pythonPackages = p;})
     ]))
-    (texlive.combine rec {
-      inherit (texlive) scheme-small collection-xetex
-        collection-latexrecommended
-        preview dvisvgm newtx fontaxes
-        amsfonts amsmath standalone stix2-type1 stix2-otf unicode-math;
-    })
-    ghostscript
-    stix-two
-    (import ./snuggletex.nix {})
+    (import ./snuggletex.nix {inherit pkgs;})
   ];
 }

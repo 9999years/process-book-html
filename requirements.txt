@@ -1,0 +1,5 @@
+beautifulsoup4
+lxml
+termcolor
+ebooklib
+ptpython  # Just for development.
